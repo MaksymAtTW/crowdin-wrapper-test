@@ -12,12 +12,14 @@ class CrowdinCliWraper {
 	String[] args
 	String workingDir
 	String crowdinProjectApiKey
+	CliExecutor crowdinCliToolExecuter
 
 	CrowdinCliWraper(args) {
 		this.args = args
 		this.workingDir = retrieveWorkingDir()
 		this.crowdinProjectApiKey = retrieveApiKey()
-		println("Working Dir ${this.workingDir}")
+		this.crowdinCliToolExecuter = new CliExecutor()
+		println("Using working dir ${this.workingDir}")
 	}
 
 	private retrieveApiKey() {
@@ -26,7 +28,6 @@ class CrowdinCliWraper {
 
 	private String retrieveWorkingDir() {
 		def crowdinwHome = System.getenv("CROWDINW_HOME")
-		println("CROWDINW_HOME is $crowdinwHome")
 		def workingDirPath = crowdinwHome ?: "."
 		def workingDir = new File(workingDirPath)
 		if (!workingDir.exists()) throw new RuntimeException("Corwdin home dir does not exists: $workingDir")
@@ -37,21 +38,32 @@ class CrowdinCliWraper {
 	def execute() {
 		CliBuilder cliBuilder = new CliBuilder(usage: "crowdinw.groovy <arguments>")
 		cliBuilder.c(longOpt:'config', args:1, argName:'crowdinConfig', 'Project-specific configuration file')
-		cliBuilder.t(longOpt:'conf-template', args:2, argName:'crowdinConfigTemplate', 'Template of project-specific configuration file')
+		cliBuilder.t(longOpt:'conf-template', args:1, argName:'crowdinConfigTemplate', 'Template of project-specific configuration file')
+		cliBuilder._(longOpt:'commit', 'Commit translation into repo')
 		def options = cliBuilder.parse(args)
 		if (!options.arguments()) {
 			cliBuilder.usage()
 		} else {
 			println("Executing Crowdin Wrapper with arguments: ${options.arguments()}")
-			runCrowdinCliTool(crowdinCliToolProcessBuilder(options))
+			crowdinCliToolExecuter.execute(crowdinCliToolProcessBuilder(options))
+			commitTranslationIfNeeded(options)
+
 		}
 	}
 
-	private def runCrowdinCliTool(ProcessBuilder processBuilder) {
-		println("Running Crowdin CLI Tool: ${processBuilder.command()}")
+	private def commitTranslationIfNeeded(OptionAccessor opts) {
+		if(opts.getProperty("commit")) {
+			def vcsAdapter = createVcsAdapter()
+			vcsAdapter.commitChanges("Crowdin Sync")
+		}
+	}
 
-		def process  = processBuilder.start()
-		process.inputStream.eachLine {println it}
+	private VcsAdapter createVcsAdapter() {
+		def vcsAdapter = new GitAdapter()
+		if (!vcsAdapter.isSupported(new File(workingDir))) {
+			throw new RuntimeException("Git Repo did not found")
+		}
+		return vcsAdapter
 	}
 
 	private ProcessBuilder crowdinCliToolProcessBuilder(OptionAccessor opts) {
@@ -59,7 +71,7 @@ class CrowdinCliWraper {
 		crowdinCliToolRunCommand.addAll(configLocation(opts))
 		crowdinCliToolRunCommand.addAll(argumentsFromCommandLine(opts))
 
-		new ProcessBuilder(crowdinCliToolRunCommand).redirectErrorStream(true)
+		new ProcessBuilder(crowdinCliToolRunCommand)
 	}
 
 	private List<String> configLocation(OptionAccessor opts) {
@@ -93,6 +105,54 @@ class CrowdinCliWraper {
 		["java", "-jar", "${workingDir}/crowdin/lib/${CROWDIN_LIB_VERSION}/crowdin-cli.jar".toString()]
 	}
 
+}
+
+class CliExecutor {
+	public def execute(ProcessBuilder processBuilder) throws RuntimeException {
+		println("Running ${processBuilder.command()}")
+
+		StringBuffer out = new StringBuffer()
+		StringBuffer err = new StringBuffer()
+
+		def process  = processBuilder.start()
+
+		process.waitForProcessOutput(out, err)
+
+		println("Running ${processBuilder.command()} produced output: [${out.toString().trim()}]")
+
+		if (err.toString()) {
+			def message = "Running ${processBuilder.command()} produced an error: [${err.toString().trim()}]"
+			println(message)
+		}
+	}
+}
+
+interface VcsAdapter {
+	boolean isSupported(File directory)
+	void commitChanges(String message)
+}
+
+class GitAdapter implements VcsAdapter {
+
+	CliExecutor gitExecutor
+
+	GitAdapter() {
+		gitExecutor = new CliExecutor()
+	}
+
+	@Override
+	boolean isSupported(File directory) {
+		if (!directory.list().grep('.git')) {
+			return directory.parentFile? isSupported(directory.parentFile) : false
+		}
+		true
+	}
+
+	@Override
+	void commitChanges(String message) {
+		List<String> command = ['git', 'commit', '-m', message, "-a"]
+		gitExecutor.execute(new ProcessBuilder(command))
+	}
 }
 
 new CrowdinCliWraper(args).execute()
