@@ -14,6 +14,7 @@ class CrowdinCliWraper {
 	static String CROWDIN_LIB_VERSION = "0.5.1"
 	static String NO_BRANCH = "#no-branch#"
 	OptionAccessor opts
+	CliBuilder cliBuilder
 	String workingDir
 	String crowdinProjectApiKey
 	CliExecutor crowdinCliToolExecuter
@@ -43,7 +44,7 @@ class CrowdinCliWraper {
 	}
 
 	private OptionAccessor parseCommandLineOptions(String[] args) {
-		CliBuilder cliBuilder = new CliBuilder(usage: "crowdinw.groovy [global options] command [command options] [arguments...]")
+		cliBuilder = new CliBuilder(usage: "crowdinw.groovy [global options] command [command options] [arguments...]")
 		cliBuilder.c(longOpt:'config', args:1, argName:'crowdinConfig', 'Project-specific configuration file')
 		cliBuilder.t(longOpt:'conf-template', args:1, argName:'crowdinConfigTemplate', 'Template of project-specific configuration file')
 		cliBuilder._(longOpt:'commit', 'Commit translation into repo')
@@ -55,8 +56,7 @@ class CrowdinCliWraper {
 		if (!opts.arguments()) {
 			cliBuilder.usage()
 		} else {
-			println("Executing Crowdin Wrapper with arguments: ${opts.arguments()}")
-			def output = crowdinCliToolExecuter.executeAndReturnOutput(crowdinCliToolProcessBuilder(opts))
+			def output = crowdinCliToolExecuter.executeAndReturnOutput(crowdinCliToolProcessBuilder(opts), [errorPatterns: ["error: "]])
 			commitTranslationIfNeeded(opts, output)
 		}
 	}
@@ -148,7 +148,7 @@ class UpdatedTranslationFilesParser implements CommitFileParameter {
 }
 
 class CliExecutor {
-	public String executeAndReturnOutput(ProcessBuilder processBuilder) throws RuntimeException {
+	public String executeAndReturnOutput(ProcessBuilder processBuilder, Map options = [:]) throws RuntimeException {
 		println("Running ${processBuilder.command()}")
 
 		StringBuffer out = new StringBuffer()
@@ -163,6 +163,10 @@ class CliExecutor {
 		if (err.toString()) {
 			def message = "Running ${processBuilder.command()} produced an error: [${err.toString().trim()}]"
 			println(message)
+		}
+
+		if (options['errorPatterns'] && [out, err]*.toString().any { String s -> (options['errorPatterns'] as List<String>).any { s.contains(it) } }) {
+			throw new RuntimeException("${ options['errorMessage'] ? options['errorMessage'] as String : 'Failed to run [' + processBuilder.command().join(' ') + ']' } - [$out][$err]")
 		}
 
 		return out.toString()
@@ -217,7 +221,7 @@ class GitAdapter implements VcsAdapter {
 		if (gitStatus().size() > 0) {
 			gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'add', fileToCommitParam.parameters].flatten()).directory(workingDir))
 			gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'commit', '-m', message, fileToCommitParam.parameters].flatten()).directory(workingDir))
-			gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'push', '--porcelain', 'origin', branch]).directory(workingDir))
+			gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'push', '--porcelain', 'origin', branch]).directory(workingDir), [errorPatterns: ['[rejected]', 'error: ', 'fatal: ']])
 		} else {
 			println("Nothing to commit")
 		}
