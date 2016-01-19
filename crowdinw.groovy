@@ -194,7 +194,7 @@ class GitAdapter implements VcsAdapter {
 	}
 
 	private Map<String, List<String>> gitStatus() {
-		exec(['git', 'status', '--porcelain']).readLines().groupBy {
+		gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'status', '--porcelain']).directory(workingDir)).readLines().groupBy {
 			if (it ==~ /^\s*\?{2}.*/) {
 				UNVERSIONED
 			} else {
@@ -214,9 +214,13 @@ class GitAdapter implements VcsAdapter {
 
 	@Override
 	void commitChanges(String message, CommitFileParameter fileToCommitParam) {
-		gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'add', fileToCommitParam.parameters].flatten()).directory(workingDir))
-		gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'commit', '-m', message, fileToCommitParam.parameters].flatten()).directory(workingDir))
-		gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'push', '--porcelain', 'origin', branch]).directory(workingDir))
+		if (gitStatus().size() > 0) {
+			gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'add', fileToCommitParam.parameters].flatten()).directory(workingDir))
+			gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'commit', '-m', message, fileToCommitParam.parameters].flatten()).directory(workingDir))
+			gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'push', '--porcelain', 'origin', branch]).directory(workingDir))
+		} else {
+			println("Nothing to commit")
+		}
 	}
 }
 
