@@ -1,6 +1,9 @@
 #!/usr/bin/env groovy
+
 import groovy.text.GStringTemplateEngine
 import groovy.text.Template
+
+import java.util.regex.Matcher
 
 /**
  * @author Maksym Bryzhko
@@ -9,16 +12,20 @@ import groovy.text.Template
 
 class CrowdinCliWraper {
 	static String CROWDIN_LIB_VERSION = "0.5.1"
-	String[] args
+	static String NO_BRANCH = "#no-branch#"
+	OptionAccessor opts
 	String workingDir
 	String crowdinProjectApiKey
 	CliExecutor crowdinCliToolExecuter
+	String branch
 
-	CrowdinCliWraper(args) {
-		this.args = args
+	CrowdinCliWraper(String[] args) {
 		this.workingDir = retrieveWorkingDir()
 		this.crowdinProjectApiKey = retrieveApiKey()
 		this.crowdinCliToolExecuter = new CliExecutor()
+		this.opts = parseCommandLineOptions(args)
+		this.branch = getBranchFromCommandLine(opts)
+
 		println("Using working dir ${this.workingDir}")
 	}
 
@@ -35,31 +42,34 @@ class CrowdinCliWraper {
 		return workingDir.canonicalPath
 	}
 
-	def execute() {
-		CliBuilder cliBuilder = new CliBuilder(usage: "crowdinw.groovy <arguments>")
+	private OptionAccessor parseCommandLineOptions(String[] args) {
+		CliBuilder cliBuilder = new CliBuilder(usage: "crowdinw.groovy [global options] command [command options] [arguments...]")
 		cliBuilder.c(longOpt:'config', args:1, argName:'crowdinConfig', 'Project-specific configuration file')
 		cliBuilder.t(longOpt:'conf-template', args:1, argName:'crowdinConfigTemplate', 'Template of project-specific configuration file')
 		cliBuilder._(longOpt:'commit', 'Commit translation into repo')
-		def options = cliBuilder.parse(args)
-		if (!options.arguments()) {
+		cliBuilder.b(argName:'branch', 'Branch name')
+		return cliBuilder.parse(args)
+	}
+
+	def execute() {
+		if (!opts.arguments()) {
 			cliBuilder.usage()
 		} else {
-			println("Executing Crowdin Wrapper with arguments: ${options.arguments()}")
-			crowdinCliToolExecuter.execute(crowdinCliToolProcessBuilder(options))
-			commitTranslationIfNeeded(options)
-
+			println("Executing Crowdin Wrapper with arguments: ${opts.arguments()}")
+			def output = crowdinCliToolExecuter.executeAndReturnOutput(crowdinCliToolProcessBuilder(opts))
+			commitTranslationIfNeeded(opts, output)
 		}
 	}
 
-	private def commitTranslationIfNeeded(OptionAccessor opts) {
+	private def commitTranslationIfNeeded(OptionAccessor opts, String crowdinCliToolOutput) {
 		if(opts.getProperty("commit")) {
 			def vcsAdapter = createVcsAdapter()
-			vcsAdapter.commitChanges("Crowdin Sync")
+			vcsAdapter.commitChanges("Crowdin Sync", new UpdatedTranslationFilesParser(crowdinCliToolOutput: crowdinCliToolOutput, baseDir: workingDir))
 		}
 	}
 
 	private VcsAdapter createVcsAdapter() {
-		def vcsAdapter = new GitAdapter()
+		def vcsAdapter = new GitAdapter(workingDir: new File(workingDir), branch: (branch == NO_BRANCH ? "master" : branch))
 		if (!vcsAdapter.isSupported(new File(workingDir))) {
 			throw new RuntimeException("Git Repo did not found")
 		}
@@ -70,8 +80,17 @@ class CrowdinCliWraper {
 		List<String> crowdinCliToolRunCommand = baseCrowdinExecCommand()
 		crowdinCliToolRunCommand.addAll(configLocation(opts))
 		crowdinCliToolRunCommand.addAll(argumentsFromCommandLine(opts))
+		crowdinCliToolRunCommand.addAll(branch())
 
 		new ProcessBuilder(crowdinCliToolRunCommand)
+	}
+
+	private List<String> branch() {
+		branch == NO_BRANCH ? [] : ['-b', branch]
+	}
+
+	private String getBranchFromCommandLine(OptionAccessor opts) {
+		opts.getProperty("b") ?: NO_BRANCH
 	}
 
 	private List<String> configLocation(OptionAccessor opts) {
@@ -107,8 +126,29 @@ class CrowdinCliWraper {
 
 }
 
+class UpdatedTranslationFilesParser implements CommitFileParameter {
+
+	private String crowdinCliToolOutput
+	private String baseDir
+
+	@Override
+	String[] getParameters() {
+
+		Matcher matcher = crowdinCliToolOutput =~ ~/(?:Extracting: `(.+)')/
+
+		String[] result = []
+		if (matcher.count > 0) {
+			result = (0..matcher.count - 1).collect { idx ->
+				def extractedFile = matcher[idx][1] as String
+				extractedFile.startsWith("/") ? extractedFile.substring(1) : extractedFile
+			}
+		}
+		result
+	}
+}
+
 class CliExecutor {
-	public def execute(ProcessBuilder processBuilder) throws RuntimeException {
+	public String executeAndReturnOutput(ProcessBuilder processBuilder) throws RuntimeException {
 		println("Running ${processBuilder.command()}")
 
 		StringBuffer out = new StringBuffer()
@@ -124,21 +164,45 @@ class CliExecutor {
 			def message = "Running ${processBuilder.command()} produced an error: [${err.toString().trim()}]"
 			println(message)
 		}
+
+		return out.toString()
 	}
+}
+
+interface CommitFileParameter {
+	String[] getParameters()
 }
 
 interface VcsAdapter {
 	boolean isSupported(File directory)
-	void commitChanges(String message)
+	void commitChanges(String message, CommitFileParameter fileToCommitParam)
 }
 
 class GitAdapter implements VcsAdapter {
 
+	private static final String UNCOMMITTED = 'uncommitted'
+	private static final String UNVERSIONED = 'unversioned'
+	private static final String AHEAD = 'ahead'
+	private static final String BEHIND = 'behind'
+
 	CliExecutor gitExecutor
+	File workingDir
+	String branch
 
 	GitAdapter() {
 		gitExecutor = new CliExecutor()
 	}
+
+	private Map<String, List<String>> gitStatus() {
+		exec(['git', 'status', '--porcelain']).readLines().groupBy {
+			if (it ==~ /^\s*\?{2}.*/) {
+				UNVERSIONED
+			} else {
+				UNCOMMITTED
+			}
+		}
+	}
+
 
 	@Override
 	boolean isSupported(File directory) {
@@ -149,9 +213,10 @@ class GitAdapter implements VcsAdapter {
 	}
 
 	@Override
-	void commitChanges(String message) {
-		List<String> command = ['git', 'commit', '-m', message, "-a"]
-		gitExecutor.execute(new ProcessBuilder(command))
+	void commitChanges(String message, CommitFileParameter fileToCommitParam) {
+		gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'add', fileToCommitParam.parameters].flatten()).directory(workingDir))
+		gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'commit', '-m', message, fileToCommitParam.parameters].flatten()).directory(workingDir))
+		gitExecutor.executeAndReturnOutput(new ProcessBuilder(['git', 'push', '--porcelain', 'origin', branch]).directory(workingDir))
 	}
 }
 
