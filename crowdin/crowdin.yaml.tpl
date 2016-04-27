@@ -8,24 +8,74 @@ base_path: <%= basePath %>
 #Naming convention for translations - 'filename'+'_'+'langCode'+'.properties'
 #eg. translate.messages_de.properties
 files:
+
+  -
+    source: /msg/angular.json
+    translation: /msg/angular_%locale%.%file_extension%
+    languages_mapping:
+          locale:
+# crowdin_language_code: local_name
+            'en-US': 'en_US'
+            'es-ES': 'es'
+            'zh-CN': 'zh'
+            'pt-BR': 'pt'
+            'de': 'de'
+            'el': 'el'
+            'et': 'et'
+            'fr': 'fr'
+            'hu': 'hu'
+            'it': 'it'
+            'ja': 'ja'
+            'ko': 'ko'
+            'pl': 'pl'
+            'ru': 'ru'
+            'en-GB': 'en'
+            'es-MX': 'es_MX'
   -
     source: /msg/recipient.properties
-    translation: /msg/%file_name%_%two_letters_code%.%file_extension%
+    translation: /msg/%file_name%_%locale%.%file_extension%
     languages_mapping:
-          two_letters_code:
+          locale:
+# crowdin_language_code: local_name
             'en-US': 'en_US'
-            'en-en': 'en'
+            'es-ES': 'es'
+            'zh-CN': 'zh'
+            'pt-BR': 'pt'
+            'de': 'de'
+            'el': 'el'
+            'et': 'et'
+            'fr': 'fr'
+            'hu': 'hu'
+            'it': 'it'
+            'ja': 'ja'
+            'ko': 'ko'
+            'pl': 'pl'
+            'ru': 'ru'
+            'en-GB': 'en'
+            'es-MX': 'es_MX'
 
-    update_option: 'update_as_unapproved'
-
+            
   -
     source: /msg/subfolder/file.properties
-    translation: /msg/subfolder/%file_name%_%two_letters_code%.%file_extension%
+#    translation: /msg/subfolder/%file_name%_%two_letters_code%.%file_extension%
+    translation: /msg/subfolder/%file_name%_%locale%.%file_extension%
     languages_mapping:
-          two_letters_code:
-            'en-US': 'en_US'    
-            'en-en': 'en'
-    update_option: 'update_without_changes'
-    
-    
+          locale:
+            'en-US': 'en_US'
+            'es-ES': 'es'
+            'zh-CN': 'zh'
+            'pt-BR': 'pt'
+            'de': 'de'
+            'el': 'el'
+            'et': 'et'
+            'fr': 'fr'
+            'hu': 'hu'
+            'it': 'it'
+            'ja': 'ja'
+            'ko': 'ko'
+            'pl': 'pl'
+            'ru': 'ru'
+            'en-GB': 'en'   
+            'es-MX': 'es_MX'         
+   
 ---

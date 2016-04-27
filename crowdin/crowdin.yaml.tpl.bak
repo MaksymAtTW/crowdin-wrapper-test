@@ -1,0 +1,34 @@
+---
+
+api_key: <%= apiKey %>
+project_identifier: cd-test
+base_path: <%= basePath %>
+
+#Add new properties files for translation below 
+#Naming convention for translations - 'filename'+'_'+'langCode'+'.properties'
+#eg. translate.messages_de.properties
+files:
+  -
+    source: /msg/recipient.properties
+#    translation: /msg/%file_name%_%two_letters_code%.%file_extension%
+    translation: /msg/%file_name%_%locale%.%file_extension%
+    languages_mapping:
+          two_letters_code:
+# crowdin_language_code: local_name
+            'en-US': 'en_US'
+            
+
+    update_option: 'update_as_unapproved'
+
+  -
+    source: /msg/subfolder/file.properties
+#    translation: /msg/subfolder/%file_name%_%two_letters_code%.%file_extension%
+    translation: /msg/subfolder/%file_name%_%locale%.%file_extension%
+    languages_mapping:
+          two_letters_code:
+            'en-US': 'en_US'    
+            
+    update_option: 'update_without_changes'
+    
+    
+---
