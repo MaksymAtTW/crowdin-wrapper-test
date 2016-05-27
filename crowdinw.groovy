@@ -7,34 +7,45 @@ import java.util.regex.Matcher
 
 /**
  * @author Maksym Bryzhko
- * @version 0.1
+ * @version 1.1
  */
 
 class CrowdinCliWraper {
 	static String CROWDIN_LIB_VERSION = "0.5.1"
 	static String NO_BRANCH = "#no-branch#"
+	static String PSEUDO_LANG = "ko"
+
 	OptionAccessor opts
 	CliBuilder cliBuilder
-	String workingDir
+	// where to the Crowdin Wrapper script to run from
+	String wrapperWorkingDir
+	// base dir for the messages sync
+	String projectWorkingDir
 	String crowdinProjectApiKey
 	CliExecutor crowdinCliToolExecuter
 	String branch
+	Boolean deletePseudoLang
 
 	CrowdinCliWraper(String[] args) {
-		this.workingDir = retrieveWorkingDir()
+		this.wrapperWorkingDir = retrieveWrapperWorkingDir()
 		this.crowdinProjectApiKey = retrieveApiKey()
 		this.crowdinCliToolExecuter = new CliExecutor()
 		this.opts = parseCommandLineOptions(args)
 		this.branch = getBranchFromCommandLine(opts)
+		this.deletePseudoLang = isDeletePseudoLang(opts)
+		this.projectWorkingDir = retrieveProjectWorkingDir(opts)
+		println("Using Crowdin wrapper working dir ${this.wrapperWorkingDir}")
+	}
 
-		println("Using working dir ${this.workingDir}")
+	private Boolean isDeletePseudoLang(OptionAccessor opt) {
+		opts.getProperty("delete-pseudo-translations")
 	}
 
 	private retrieveApiKey() {
 		System.getenv("CROWDINW_PROJECT_API_KEY")
 	}
 
-	private String retrieveWorkingDir() {
+	private String retrieveWrapperWorkingDir() {
 		def crowdinwHome = System.getenv("CROWDINW_HOME")
 		def workingDirPath = crowdinwHome ?: "."
 		def workingDir = new File(workingDirPath)
@@ -43,11 +54,23 @@ class CrowdinCliWraper {
 		return workingDir.canonicalPath
 	}
 
+	private String retrieveProjectWorkingDir(OptionAccessor opts) {
+		def projectWorkingDir = opts.getProperty("project-working-dir")
+		if (!projectWorkingDir) return null
+
+		def projectWorkingDirFile = new File(projectWorkingDir)
+		if (!projectWorkingDirFile.exists()) throw new RuntimeException("Project working dir does not exists: $projectWorkingDirFile")
+
+		return projectWorkingDirFile.canonicalPath
+	}
+
 	private OptionAccessor parseCommandLineOptions(String[] args) {
 		cliBuilder = new CliBuilder(usage: "crowdinw.groovy [global options] command [command options] [arguments...]")
 		cliBuilder.c(longOpt:'config', args:1, argName:'crowdinConfig', 'Project-specific configuration file')
 		cliBuilder.t(longOpt:'conf-template', args:1, argName:'crowdinConfigTemplate', 'Template of project-specific configuration file')
+		cliBuilder._(longOpt:'project-working-dir', args:1, argName:'projectWorkingDir', 'Path to the project working directory')
 		cliBuilder._(longOpt:'commit', 'Commit translation into repo')
+		cliBuilder._(longOpt:'delete-pseudo-translations', 'Delete downloaded translation files with pseudo language')
 		cliBuilder.b(argName:'branch', 'Branch name')
 		return cliBuilder.parse(args)
 	}
@@ -57,21 +80,34 @@ class CrowdinCliWraper {
 			cliBuilder.usage()
 		} else {
 			def output = crowdinCliToolExecuter.executeAndReturnOutput(crowdinCliToolProcessBuilder(opts), [errorPatterns: ["error: "]])
-			commitTranslationIfNeeded(opts, output)
+			def extractFiles = new UpdatedTranslationFilesParser(output, PSEUDO_LANG, deletePseudoLang)
+			deletePseudoTranslations(opts, extractFiles)
+			commitTranslationIfNeeded(opts, extractFiles)
 		}
 	}
 
-	private def commitTranslationIfNeeded(OptionAccessor opts, String crowdinCliToolOutput) {
+	private def deletePseudoTranslations(OptionAccessor opts, UpdatedTranslationFilesParser files) {
+		if(this.deletePseudoLang) {
+			files.translationFilesForPseudoLang.each { String relativeFilePath ->
+				def file = new File(wrapperWorkingDir, relativeFilePath)
+				if (!file.delete()) {
+					throw new RuntimeException("Cannot delete pseudo local translation file: ${file}")
+				}
+			}
+		}
+	}
+
+	private def commitTranslationIfNeeded(OptionAccessor opts, CommitFileParameter files) {
 		if(opts.getProperty("commit")) {
 			def vcsAdapter = createVcsAdapter()
-			vcsAdapter.commitChanges("Crowdin Sync", new UpdatedTranslationFilesParser(crowdinCliToolOutput: crowdinCliToolOutput, baseDir: workingDir))
+			vcsAdapter.commitChanges("Crowdin Sync", files)
 		}
 	}
 
 	private VcsAdapter createVcsAdapter() {
-		def vcsAdapter = new GitAdapter(workingDir: new File(workingDir), branch: (branch == NO_BRANCH ? "master" : branch))
-		if (!vcsAdapter.isSupported(new File(workingDir))) {
-			throw new RuntimeException("Git Repo did not found")
+		def vcsAdapter = new GitAdapter(workingDir: new File(wrapperWorkingDir), branch: (branch == NO_BRANCH ? "master" : branch))
+		if (!vcsAdapter.isSupported(new File(wrapperWorkingDir))) {
+			throw new RuntimeException("Git Repo did not found in working dir: ${wrapperWorkingDir}")
 		}
 		return vcsAdapter
 	}
@@ -99,7 +135,7 @@ class CrowdinCliWraper {
 		} else if (opts.getProperty("c")) {
 			["-c", opts.getProperty("c").toString()]
 		} else {
-			["-c", "${workingDir}/crowdin/crowdin.yaml".toString()]
+			["-c", "${wrapperWorkingDir}/crowdin/crowdin.yaml".toString()]
 		}
 	}
 
@@ -111,8 +147,11 @@ class CrowdinCliWraper {
 
 		Template template = new GStringTemplateEngine().createTemplate(templateFile)
 
+		def projectWorkingDirToUse = projectWorkingDir ?: wrapperWorkingDir
+		println("Using Project working dir ${projectWorkingDirToUse}")
+
 		File crowdinConfigFile = File.createTempFile("crowdin", "yaml")
-		crowdinConfigFile << template.make([basePath: workingDir, apiKey: crowdinProjectApiKey])
+		crowdinConfigFile << template.make([basePath: projectWorkingDirToUse, apiKey: crowdinProjectApiKey])
 		crowdinConfigFile.absolutePath
 	}
 
@@ -121,7 +160,7 @@ class CrowdinCliWraper {
 	}
 
 	private ArrayList<String> baseCrowdinExecCommand() {
-		["java", "-jar", "${workingDir}/crowdin/lib/${CROWDIN_LIB_VERSION}/crowdin-cli.jar".toString()]
+		["java", "-jar", "${wrapperWorkingDir}/crowdin/lib/${CROWDIN_LIB_VERSION}/crowdin-cli.jar".toString()]
 	}
 
 }
@@ -129,11 +168,19 @@ class CrowdinCliWraper {
 class UpdatedTranslationFilesParser implements CommitFileParameter {
 
 	private String crowdinCliToolOutput
-	private String baseDir
+	private String pseudoLang
+	private Boolean deletePseudoLang
 
-	@Override
-	String[] getParameters() {
+	private final String[] extactedFiles
 
+	UpdatedTranslationFilesParser(crowdinCliToolOutput, pseudoLang, deletePseudoLang) {
+		this.crowdinCliToolOutput = crowdinCliToolOutput
+		this.pseudoLang = pseudoLang
+		this.extactedFiles = parseExtractFiles()
+		this.deletePseudoLang = deletePseudoLang
+	}
+
+	private String[] parseExtractFiles() {
 		Matcher matcher = crowdinCliToolOutput =~ ~/(?:Extracting: `(.+)')/
 
 		String[] result = []
@@ -144,6 +191,19 @@ class UpdatedTranslationFilesParser implements CommitFileParameter {
 			}
 		}
 		result
+	}
+
+	@Override
+	String[] getParameters() {
+		deletePseudoLang ? extactedFiles.findAll { !isPseudoLangTranslation(it)  } : extactedFiles
+	}
+
+	String[] getTranslationFilesForPseudoLang() {
+		extactedFiles.findAll { isPseudoLangTranslation(it) }
+	}
+
+	private boolean isPseudoLangTranslation(String fileNamePath) {
+		fileNamePath.matches("^.*${pseudoLang}\\..*\$")
 	}
 }
 
