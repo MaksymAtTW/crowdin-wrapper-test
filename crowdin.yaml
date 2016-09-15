@@ -5,3 +5,7 @@ files:
     languages_mapping:
       locale:
         de: de
+        zh-CN: zh
+        en-GB: en
+        et: et
+        fr: fr
