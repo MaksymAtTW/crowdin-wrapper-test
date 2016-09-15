@@ -1,0 +1,7 @@
+files:
+  - 
+    source: /msg/angular.json
+    translation: '/msg/%file_name%_%locale%.%file_extension%'
+    languages_mapping:
+      locale:
+        de: de
